@@ -222,7 +222,7 @@ def gen_multipath_taps(taps, pdp_decay, rng):
 def apply_multipath(x_cp, taps):
     return np.convolve(x_cp, taps, mode='full')[:len(x_cp)]
 
-def equalize(Y, Hest, ebn0_db, bps, n, cp, method='mmse'):
+def equalize(Y, Hest, ebn0_db, bps, n, cp, plt_loss=1.0, method='mmse'):
     m=method.lower()
     if m=='zf':
         denom = Hest
@@ -230,7 +230,7 @@ def equalize(Y, Hest, ebn0_db, bps, n, cp, method='mmse'):
         return Y / denom
     # mmse
     ebn0 = 10**(ebn0_db/10)
-    esn0 = ebn0 * bps * (n/(n+cp))
+    esn0 = ebn0 * bps * (n/(n+cp)) * plt_loss
     denom = (np.abs(Hest)**2 + 1.0/max(esn0,1e-12))
     denom = np.where(denom<1e-15, 1e-15, denom)
     return Y * np.conj(Hest) / denom
@@ -245,6 +245,7 @@ def simulate(
     channel='awgn', interp='lin', eq='mmse',
     use_global_phase_corr=True,
     taps=5, pdp_decay=0.5, fading_per_block=True,
+    cfo_hz=0.0,
     seed=2025, ebn0_def="raw",   # "raw" or "info" (pilot overhead)
     save_csv=None, save_png=None
 ):
@@ -274,6 +275,10 @@ def simulate(
 
             x_time = np.fft.ifft(X)
             x_cp = np.concatenate([x_time[-CP:], x_time])
+            
+            if cfo_hz != 0.0:
+                t = np.arange(len(x_cp)) / N
+                x_cp = x_cp * np.exp(1j * 2 * np.pi * cfo_hz * t)
 
             # --- Channel ---
             if channel=='awgn':
@@ -282,13 +287,19 @@ def simulate(
                 g = flat_rayleigh_gain(rng)
                 y_cp = add_awgn(g*x_cp, eb, N, CP, bps, plt_loss=plt_loss)
             elif channel=='multipath':
-                h = gen_multipath_taps(taps, pdp_decay, rng) if fading_per_block or 'h' not in locals() else h
-                y_cp = add_awgn(apply_multipath(x_cp, h), eb, N, CP, bps, plt_loss=plt_loss)
+                if fading_per_block or not 'h_taps' in locals():
+                    h_taps = gen_multipath_taps(taps, pdp_decay, rng)
+                y_cp = add_awgn(apply_multipath(x_cp, h_taps), eb, N, CP, bps, plt_loss=plt_loss)
             else:
                 raise ValueError("channel must be 'awgn'|'flatrayleigh'|'multipath'")
 
             # --- RX ---
             y = y_cp[CP:CP+N]
+            
+            if cfo_hz != 0.0:
+                t = np.arange(len(y)) / N
+                y = y * np.exp(-1j * 2 * np.pi * cfo_hz * t)
+            
             Y = np.fft.fft(y)
 
             # (1) global pilot phase correction
@@ -304,7 +315,7 @@ def simulate(
             Hest_full = interpolate(Hest, pilot_idx, mode=interp)
 
             # (4) equalization
-            Y_eq = equalize(Y, Hest_full, eb, bps, N, CP, method=eq)
+            Y_eq = equalize(Y, Hest_full, eb, bps, N, CP, plt_loss=plt_loss, method=eq)
 
             # (5) demod (data carriers only)
             rx_bits = demod_fn(Y_eq[data_idx])
@@ -353,6 +364,7 @@ def main():
     p.add_argument("--taps", type=int, default=5)
     p.add_argument("--pdp_decay", type=float, default=0.5)
     p.add_argument("--fading_per_block", action="store_true", default=True)
+    p.add_argument("--cfo_hz", type=float, default=0.0, help="Carrier frequency offset in Hz")
     p.add_argument("--seed", type=int, default=2025)
     p.add_argument("--ebn0_def", default="raw", choices=["raw","info"],
                    help="'info' multiplies Es/N0 by (N_data/N) to reflect pilot overhead")
@@ -371,6 +383,7 @@ def main():
         channel=args.channel, interp=args.interp, eq=args.eq,
         use_global_phase_corr=not args.no_phasecorr,
         taps=args.taps, pdp_decay=args.pdp_decay, fading_per_block=args.fading_per_block,
+        cfo_hz=args.cfo_hz,
         seed=args.seed, ebn0_def=args.ebn0_def,
         save_csv=str(csv_path), save_png=str(png_path),
     )

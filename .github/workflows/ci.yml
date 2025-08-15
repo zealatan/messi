@@ -1,0 +1,23 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install deps
+        run: pip install -r requirements.txt
+      - name: Smoke run (AWGN, QPSK)
+        run: python ofdm_sim.py --mod QPSK --channel awgn --interp lin --eq mmse --blocks 20 --snr 0,5,10 --outdir artifacts
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ber-plots
+          path: artifacts/*
